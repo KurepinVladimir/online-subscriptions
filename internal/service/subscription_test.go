@@ -68,6 +68,33 @@ func (f *fakeRepo) ListForPeriod(_ context.Context, _ model.PeriodFilter) ([]mod
 	return f.listForPeriodSubs, nil
 }
 
+func (f *fakeRepo) SumForPeriod(_ context.Context, filter model.PeriodFilter) (int, error) {
+	// Будем считать сумму по тем данным, которые тест уже подготовил в listForPeriodSubs.
+	// Это оставляет тест unit-тестом (без БД), но проверяет бизнес-логику.
+	total := 0
+
+	for _, sub := range f.listForPeriodSubs {
+		// подписка может быть "бесконечной", но в тестах EndMonth всегда задан.
+		// если EndMonth nil — считаем, что она действует до конца запрошенного периода.
+		subTo := filter.To
+		if sub.EndMonth != nil {
+			subTo = model.YearMonth{Time: *sub.EndMonth}
+		}
+
+		m := monthsOverlap(
+			model.YearMonth{Time: sub.StartMonth},
+			subTo,
+			filter.From,
+			filter.To,
+		)
+		if m > 0 {
+			total += sub.Price * m
+		}
+	}
+
+	return total, nil
+}
+
 // ErrNotFound локальная ошибка, чтобы не поднимать database/sql в тестах.
 type notFoundError struct{}
 

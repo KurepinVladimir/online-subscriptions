@@ -74,6 +74,11 @@ func (f *handlerFakeRepo) ListForPeriod(_ context.Context, _ model.PeriodFilter)
 	return res, nil
 }
 
+func (f *handlerFakeRepo) SumForPeriod(_ context.Context, _ model.PeriodFilter) (int, error) {
+	// В этих тестах мы не проверяем расчёт суммы — только работу хендлеров.
+	return 0, nil
+}
+
 func TestCreateSubscriptionHandler_OK(t *testing.T) {
 	repo := newHandlerFakeRepo()
 	svc := service.NewSubscriptionService(repo)

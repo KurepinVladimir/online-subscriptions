@@ -2,8 +2,11 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
+
+	"github.com/KurepinVladimir/online-subscriptions/internal/repository"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -75,8 +78,12 @@ func (h *SubscriptionHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.Get(r.Context(), id)
 	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		h.logger.Error("get subscription", zap.Error(err))
-		writeError(w, http.StatusNotFound, "not found")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -101,6 +108,11 @@ func (h *SubscriptionHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.Update(r.Context(), id, req)
 	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		// валидация — 400, остальное — 500
 		h.logger.Error("update subscription", zap.Error(err))
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -118,12 +130,16 @@ func (h *SubscriptionHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.svc.Delete(r.Context(), id); err != nil {
+	err = h.svc.Delete(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		h.logger.Error("delete subscription", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
