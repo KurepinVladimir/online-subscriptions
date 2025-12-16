@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -87,32 +86,7 @@ func (s *SubscriptionService) CalculateTotalForPeriod(ctx context.Context, filte
 	if filter.To.Time.Before(filter.From.Time) {
 		return 0, fmt.Errorf("invalid period: to < from")
 	}
-
-	subs, err := s.repo.ListForPeriod(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-
-	total := 0
-	for _, sub := range subs {
-		months := monthsOverlap(
-			model.YearMonth{Time: sub.StartMonth},
-			yearMonthOrInfinity(sub.EndMonth),
-			filter.From,
-			filter.To,
-		)
-		if months > 0 {
-			total += sub.Price * months
-		}
-	}
-	return total, nil
-}
-
-func yearMonthOrInfinity(t *time.Time) model.YearMonth {
-	if t == nil {
-		return model.YearMonth{Time: time.Date(9999, 12, 1, 0, 0, 0, 0, time.UTC)}
-	}
-	return model.YearMonth{Time: *t}
+	return s.repo.SumForPeriod(ctx, filter)
 }
 
 func ymToInt(ym model.YearMonth) int {

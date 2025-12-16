@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +22,7 @@ type SubscriptionRepository interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context, filter model.ListFilter) ([]model.Subscription, error)
 	ListForPeriod(ctx context.Context, filter model.PeriodFilter) ([]model.Subscription, error)
+	SumForPeriod(ctx context.Context, filter model.PeriodFilter) (int, error)
 }
 
 type PostgresRepository struct {
@@ -76,12 +79,16 @@ FROM subscriptions WHERE id = $1`
 
 	var s model.Subscription
 	if err := r.db.GetContext(ctx, &s, query, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return &s, nil
 }
 
 func (r *PostgresRepository) Update(ctx context.Context, s *model.Subscription) error {
+
 	query := `
 UPDATE subscriptions
 SET service_name = $2,
@@ -91,16 +98,35 @@ SET service_name = $2,
     updated_at   = now()
 WHERE id = $1
 RETURNING created_at, updated_at`
-	return r.db.QueryRowContext(
+
+	err := r.db.QueryRowContext(
 		ctx,
 		query,
 		s.ID, s.ServiceName, s.Price, s.StartMonth, s.EndMonth,
 	).Scan(&s.CreatedAt, &s.UpdatedAt)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *PostgresRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM subscriptions WHERE id = $1`, id)
-	return err
+	res, err := r.db.ExecContext(ctx, `DELETE FROM subscriptions WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (r *PostgresRepository) List(ctx context.Context, filter model.ListFilter) ([]model.Subscription, error) {
@@ -173,4 +199,53 @@ func (r *PostgresRepository) ListForPeriod(ctx context.Context, filter model.Per
 		return nil, err
 	}
 	return subs, nil
+}
+
+func (r *PostgresRepository) SumForPeriod(ctx context.Context, filter model.PeriodFilter) (int, error) {
+	// $1 = from, $2 = to
+	query := `
+SELECT COALESCE(SUM(price * months), 0) AS total
+FROM (
+    SELECT
+        price,
+        CASE
+            WHEN start_month > $2 OR (end_month IS NOT NULL AND end_month < $1) THEN 0
+            ELSE (
+                SELECT COUNT(*)::int
+                FROM generate_series(
+                    date_trunc('month', GREATEST(start_month, $1::date)),
+                    date_trunc('month', LEAST(COALESCE(end_month, $2::date), $2::date)),
+                    interval '1 month'
+                )
+            )
+        END AS months
+    FROM subscriptions
+    WHERE 1=1
+      AND start_month <= $2
+      AND (end_month IS NULL OR end_month >= $1)
+`
+
+	args := []any{filter.From.Time, filter.To.Time}
+	idx := 3
+
+	if filter.UserID != nil {
+		query += fmt.Sprintf(" AND user_id = $%d", idx)
+		args = append(args, *filter.UserID)
+		idx++
+	}
+	if filter.ServiceName != nil {
+		query += fmt.Sprintf(" AND service_name = $%d", idx)
+		args = append(args, *filter.ServiceName)
+		idx++
+	}
+
+	query += `
+) t;
+`
+
+	var total int
+	if err := r.db.GetContext(ctx, &total, query, args...); err != nil {
+		return 0, err
+	}
+	return total, nil
 }

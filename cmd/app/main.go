@@ -1,14 +1,18 @@
 package main
 
 import (
-	"database/sql"
+	"context"
+	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jmoiron/sqlx"
 	"go.uber.org/zap"
 
@@ -31,12 +35,13 @@ func main() {
 	}
 	defer logg.Sync()
 
-	logg.Info("starting subscriptions service",
-		zap.String("addr", cfg.Server.Addr),
-	)
-
-	db := openDB(cfg.Database.DSN, logg)
-	defer db.Close()
+	db, err := openDB(cfg.Database.DSN)
+	if err != nil {
+		logg.Fatal("open db", zap.Error(err))
+	}
+	defer func() {
+		_ = db.Close()
+	}()
 
 	if err := repository.RunMigrations(db, "migrations"); err != nil {
 		logg.Fatal("run migrations", zap.Error(err))
@@ -62,26 +67,52 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logg.Fatal("server failed", zap.Error(err))
+	// запуск сервера
+	go func() {
+		logg.Info("http server started", zap.String("addr", cfg.Server.Addr))
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logg.Fatal("server failed", zap.Error(err))
+		}
+	}()
+
+	// ожидание сигнала
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	logg.Info("shutdown started")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logg.Error("http shutdown error", zap.Error(err))
+	} else {
+		logg.Info("http shutdown completed")
 	}
+
+	logg.Info("shutdown finished")
 }
 
-func openDB(dsn string, logger *zap.Logger) *sqlx.DB {
-	sql.Register("pgx", stdlib.GetDefaultDriver())
-
+func openDB(dsn string) (*sqlx.DB, error) {
 	db, err := sqlx.Open("pgx", dsn)
 	if err != nil {
-		logger.Fatal("open db", zap.Error(err))
+		return nil, err
 	}
 
+	// Настройки пула
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(time.Hour)
 
-	if err := db.Ping(); err != nil {
-		logger.Fatal("ping db", zap.Error(err))
+	// Ping с таймаутом, чтобы не зависнуть навсегда
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 
-	return db
+	return db, nil
 }
